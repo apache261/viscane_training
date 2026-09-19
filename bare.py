@@ -7,6 +7,8 @@ import shutil
 import time
 from typing import Any
 
+import torch
+
 from sugarcane_variety.colab_compatible import (
     print_eval_summary,
     run_all_for_colab,
@@ -22,10 +24,11 @@ RESNET_OUTPUT_DIR = str(BASE_ARTIFACTS_DIR / "resnet18")
 YOLO_OUTPUT_DIR = str(BASE_ARTIFACTS_DIR / "yolov8")
 REPORT_PATH = BASE_ARTIFACTS_DIR / "full_training_report.json"
 
-# T4-friendly defaults for 8 vCPU + T4.
-BATCH_SIZE = 32
-WORKERS = 8
-PREPROCESS_WORKERS = 8
+# Use smaller batches and fewer loader processes on Apple silicon.
+MPS_AVAILABLE = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+BATCH_SIZE = 16 if MPS_AVAILABLE else 32
+WORKERS = 2 if MPS_AVAILABLE else 8
+PREPROCESS_WORKERS = 2 if MPS_AVAILABLE else 8
 EPOCHS = 45
 PREPROCESS_RESIZE = 384
 IMAGE_SIZE = 320

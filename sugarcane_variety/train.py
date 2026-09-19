@@ -63,6 +63,15 @@ ModelType = Literal["resnet18", "yolov8"]
 ProgressCallback = Callable[[Dict[str, Any]], None]
 
 
+def _training_device() -> torch.device:
+    """Choose the available accelerator for training and evaluation."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 @dataclass
 class TrainSummary:
     best_val_acc: float
@@ -596,7 +605,7 @@ def _run_resnet18_training(
     if len(classes) < 2:
         raise ValueError("Need at least 2 classes to train a classifier.")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _training_device()
     model = _build_resnet18(num_classes=len(classes), pretrained=True)
     if freeze_backbone_epochs > 0:
         _set_resnet_backbone_trainable(model, False)
@@ -906,6 +915,7 @@ def _run_yolov8_training(
         _raise_ultralytics_dependency_error("training", exc)
 
     _set_seed(seed)
+    device = str(_training_device())
     data_dir = Path(prepared_dir).expanduser().resolve()
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -926,6 +936,7 @@ def _run_yolov8_training(
                 "epochs": epochs,
                 "classes": classes,
                 "output_dir": str(out_dir),
+                "device": device,
                 "yolo_weights": yolo_weights,
                 "training_controls": {
                     "early_stopping_patience": early_stopping_patience,
@@ -971,6 +982,7 @@ def _run_yolov8_training(
 
     train_result = model.train(
         data=str(data_dir),
+        device=device,
         epochs=epochs,
         batch=batch_size,
         imgsz=image_size,
@@ -993,8 +1005,8 @@ def _run_yolov8_training(
         raise FileNotFoundError(f"YOLOv8 checkpoint was not found under: {save_dir}")
 
     best_model = YOLO(str(best_ckpt))
-    val_metrics = best_model.val(data=str(data_dir), split="val", imgsz=image_size)
-    test_metrics = best_model.val(data=str(data_dir), split="test", imgsz=image_size)
+    val_metrics = best_model.val(data=str(data_dir), split="val", imgsz=image_size, device=device)
+    test_metrics = best_model.val(data=str(data_dir), split="test", imgsz=image_size, device=device)
     best_val_acc = _extract_yolo_top1(val_metrics)
     test_acc = _extract_yolo_top1(test_metrics)
     if progress_callback is not None:
@@ -1044,6 +1056,7 @@ def _run_yolov8_training(
         "image_size": image_size,
         "seed": seed,
         "yolo_weights": yolo_weights,
+        "device": device,
         "training_controls": {
             "early_stopping_patience": early_stopping_patience,
         },
@@ -1212,7 +1225,7 @@ def run_evaluation(
             workers=workers,
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _training_device()
     try:
         checkpoint = torch.load(ckpt_path, map_location=device)
     except Exception:
@@ -1423,12 +1436,14 @@ def _run_yolov8_evaluation(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
+    device = str(_training_device())
     model = YOLO(str(ckpt_path))
     metrics = model.val(
         data=str(data_dir),
         split="test",
         batch=batch_size,
         workers=workers,
+        device=device,
     )
     test_acc = _extract_yolo_top1(metrics)
     classes = [
@@ -1465,7 +1480,7 @@ def _run_yolov8_evaluation(
         "num_samples": num_samples,
         "classes": classes,
         "checkpoint_path": str(ckpt_path),
-        "device": "ultralytics",
+        "device": device,
         "label_task": label_task,
         "variety_acc": variety_acc,
         "maturity_acc": maturity_acc,
@@ -1482,7 +1497,7 @@ def _run_yolov8_evaluation(
         num_samples=num_samples,
         classes=classes,
         checkpoint_path=str(ckpt_path),
-        device="ultralytics",
+        device=device,
         variety_acc=variety_acc,
         maturity_acc=maturity_acc,
         per_class=[],

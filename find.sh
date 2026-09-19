@@ -1,5 +1,5 @@
 #!/bin/bash
-PROJECT="project-3dc275fe-b008-41e6-899"
+PROJECT="optimistic-jet-502300-q7"
 BASE_NAME="aitemplate"
 GPU_TYPE="nvidia-tesla-t4"
 MACHINE_TYPE="n1-standard-8"
@@ -20,7 +20,7 @@ for Z in $ZONES; do
     --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default \
     --maintenance-policy=TERMINATE \
     --provisioning-model=STANDARD \
-    --service-account=848289763513-compute@developer.gserviceaccount.com \
+    --service-account=830156731326-compute@developer.gserviceaccount.com \
     --scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/trace.append \
     --accelerator="count=1,type=$GPU_TYPE" \
     --tags=https-server \

@@ -26,6 +26,24 @@ your_raw_dataset/
 pip install -r requirements.txt
 ```
 
+### Train with `bare.py` on an Apple M2 Mac
+
+Install the dependencies in a native Apple silicon Python environment, then check
+that PyTorch can use the Mac GPU:
+
+```bash
+python -c "import torch; print(torch.backends.mps.is_available())"
+python bare.py
+```
+
+The check should print `True`. `bare.py` automatically selects MPS for ResNet18
+and YOLOv8 training and evaluation when available. If MPS is unavailable, training
+uses CPU. Image preparation remains on CPU. On MPS, `bare.py` starts with a batch
+size of 16 and 2 data workers to reduce memory pressure; adjust these constants
+near the top of the script if your Mac has more memory. The script reads from
+`content/data/raw/DATASETSFINAL` and deletes its previous prepared data and
+training outputs before starting a full run.
+
 ## 3) CLI commands
 
 Use `main.py` as the entrypoint.
@@ -127,9 +145,9 @@ python main.py train \
   --rotation-degrees 3
 ```
 
-During training and testing, resize/crop/flip/color jitter/normalization run on the
-same device as the model. With CUDA available, the repeated per-epoch preprocessing
-uses the GPU instead of your CPU.
+During ResNet18 training and testing, resize/crop/flip/color jitter/normalization
+run on the same device as the model. With CUDA or MPS available, the repeated
+per-epoch transforms use the accelerator instead of your CPU.
 
 For research settings, the training pipeline uses conservative augmentation
 defaults. ResNet18 training resizes images to 256 x 256, applies a 224 x 224
