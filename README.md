@@ -48,6 +48,11 @@ training outputs before starting a full run.
 
 Use `main.py` as the entrypoint.
 
+Keep setting your own dataset paths in the commands below. ResNet18 training
+also builds the feature verifier automatically from the same prepared dataset
+and saves it under `<output-dir>/verifier/`. No additional dataset path or
+separate verifier command is required for a new training run.
+
 ### Preprocess only
 
 ```bash
@@ -262,10 +267,39 @@ python main.py all \
 - `artifacts/resnet18/resnet18_android.ptl`: PyTorch Lite artifact for Android
 - `artifacts/resnet18/resnet18_android.onnx`: ONNX export for Android runtimes
 - `artifacts/resnet18/resnet18_android_metadata.json`: Android preprocessing and labels
+- `artifacts/resnet18/verifier/feature_verifier.pt`: feature verifier built automatically from the same sugarcane dataset
+- `artifacts/resnet18/verifier/feature_verifier_metadata.json`: verifier policy and evaluation summary
 - `artifacts/yolov8/yolov8/weights/best.pt`: YOLOv8 classification checkpoint
 - `artifacts/yolov8/yolov8/weights/best.onnx`: YOLOv8 ONNX export when export succeeds
 - `artifacts/yolov8/yolov8_android_metadata.json`: Android preprocessing and labels
 - `artifacts/metrics.json`: classes and training metrics
+
+## Reject unrecognized images before classification
+
+Keep the same training workflow: set `--raw-dir`, `--prepared-dir`, and
+`--output-dir` in the CLI, or `raw_dir`, `prepared_dir`, and `output_dir` in
+Colab. ResNet18 training automatically builds a feature verifier using those
+same paths. For example:
+
+```bash
+python3 main.py all \
+  --raw-dir /path/to/your_raw_dataset \
+  --prepared-dir data/prepared \
+  --output-dir artifacts/resnet18 \
+  --model-type resnet18
+```
+
+The verifier is saved to `artifacts/resnet18/verifier/feature_verifier.pt` in
+this example. `bare.py` uses the paths configured at the top of that script.
+The Colab example below also builds the verifier automatically and exposes
+its path as `train.feature_verifier_path`.
+
+The API discovers the verifier beside the loaded ResNet18 checkpoint. It uses
+training references and validation calibration, without non-sugarcane labels.
+It cannot guarantee rejection of every unrelated image. See
+[VERIFICATION.md](VERIFICATION.md) for limitations and the optional command for
+older checkpoints. Unrecognized images return HTTP 422; a missing verifier
+returns HTTP 503. YOLOv8 predictions reuse the verifier from a ResNet18 run.
 
 ## Serve the Trained Model as a FastAPI API
 
@@ -293,16 +327,17 @@ Stop the background server:
 pkill -f "uvicorn sugarcane_variety.api:app"
 ```
 
-By default, the API loads:
+By default, the API loads these variety models when present:
 
 ```text
-artifacts/best_model.pt
+content/data/sugarcane_artifacts/resnet18/best_model.pt
+content/data/sugarcane_artifacts/yolov8/yolov8/weights/best.pt
 ```
 
 To use a different checkpoint:
 
 ```bash
-MODEL_CHECKPOINT=/path/to/best_model.pt \
+MODEL_CHECKPOINT_RESNET=/path/to/best_model.pt \
 uvicorn sugarcane_variety.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -314,12 +349,13 @@ http://localhost:8000/docs
 
 Useful endpoints:
 
-- `GET /health`: check whether the model loaded.
+- `GET /health`: check model/verifier loading and `prediction_ready`.
 - `GET /models`: list supported model pipelines and Android export formats.
 - `POST /models/load`: load a specific ResNet18 or YOLOv8 checkpoint.
 - `GET /reports/current`: get live training progress and saved research reports.
 - `GET /classes`: list class labels.
-- `POST /predict`: upload one image and get the predicted sugarcane class.
+- `POST /predict`: verify image features, then return variety predictions or HTTP 422 for unrecognized images.
+- `POST /predict/annotated`: verify before annotating; rejected images return JSON without an overlay.
 - `POST /training/start`: start preprocessing/training in the background.
 - `GET /training/status`: check the current training job status.
 - `GET /artifacts/download`: download `.pt` and `.json` artifact files as a ZIP.
@@ -401,42 +437,54 @@ Example response:
 ```json
 {
   "filename": "sugarcane_leaf.jpg",
-  "prediction": {
-    "class_index": 0,
-    "confidence": 0.94,
-    "class_name": "variety_1__mature",
-    "variety": "variety_1",
-    "maturity_status": "mature"
+  "verification": {
+    "status": "accepted",
+    "reason": "matches_known_sugarcane_features",
+    "feature_distance": 0.03,
+    "distance_threshold": 0.08,
+    "method": "resnet18_nearest_cosine",
+    "verifier_version": 1,
+    "message": "Image resembles the known sugarcane examples."
   },
-  "top_k": [
-
-  ## Download a Google Drive dataset folder
-
-  If your dataset is shared from Google Drive as a folder, use the root script:
-
-  ```bash
-  python gdrive_downloader.py \
-    <DRIVE_FOLDER_ID_OR_URL> \
-    --output-dir /content/data/raw
-  ```
-
-  The script uses `gdown` to download a folder into the local dataset directory.
-  Install dependencies first:
-
-  ```bash
-  pip install -r requirements.txt
-  ```
-
-    {
-      "class_index": 0,
-      "confidence": 0.94,
-      "class_name": "variety_1__mature",
-      "variety": "variety_1",
-      "maturity_status": "mature"
+  "models": {
+    "resnet18": {
+      "prediction": {
+        "class_index": 0,
+        "confidence": 0.94,
+        "class_name": "variety_1__mature",
+        "variety": "variety_1",
+        "maturity_status": "mature"
+      },
+      "top_k": [
+        {
+          "class_index": 0,
+          "confidence": 0.94,
+          "class_name": "variety_1__mature",
+          "variety": "variety_1",
+          "maturity_status": "mature"
+        }
+      ]
     }
-  ]
+  }
 }
 ```
+
+Distances, thresholds, and scores above are illustrative. Each loaded model
+appears under `models`; unavailable models are omitted. Unrecognized images
+return HTTP 422 with an empty `models` object (see [VERIFICATION.md](VERIFICATION.md)).
+
+## Download a Google Drive dataset folder
+
+If your dataset is shared from Google Drive as a folder, use the root script:
+
+```bash
+python3 gdrive_downloader.py \
+  <DRIVE_FOLDER_ID_OR_URL> \
+  --output-dir /content/data/raw
+```
+
+The script uses `gdown` to download a folder into the local dataset directory.
+Install dependencies with `python3 -m pip install -r requirements.txt` first.
 
 ## Google Colab Compatible Usage
 
@@ -487,6 +535,7 @@ prep, train = run_all_for_colab(
 
 print(prep)
 print(train)
+print(train.feature_verifier_path)  # Automatically saved under output_dir/verifier/.
 ```
 
 To compare with YOLOv8 without repeating preprocessing:
