@@ -15,8 +15,8 @@ from urllib.parse import quote
 
 import torch
 import torch.nn.functional as F
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from PIL import Image, ImageDraw, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from torchvision import transforms
@@ -33,6 +33,7 @@ from sugarcane_variety.train import (
     _raise_ultralytics_dependency_error,
 )
 from sugarcane_variety.colab_compatible import run_all_for_colab, test_for_colab
+from sugarcane_variety.verification import SugarcaneFeatureVerifier
 
 
 DEFAULT_ARTIFACTS_DIR = "content/data/sugarcane_artifacts"
@@ -56,6 +57,8 @@ model_classes: dict[str, list[str]] = {model_type: [] for model_type in SUPPORTE
 model_image_sizes: dict[str, int] = {model_type: 224 for model_type in SUPPORTED_MODELS}
 model_load_errors: dict[str, str | None] = {model_type: None for model_type in SUPPORTED_MODELS}
 model_checkpoints: dict[str, Path] = {}
+feature_verifier: SugarcaneFeatureVerifier | None = None
+verifier_load_error: str | None = None
 training_lock = threading.Lock()
 training_status: dict[str, Any] = {
     "state": "idle",
@@ -115,6 +118,26 @@ def _open_uploaded_image(contents: bytes) -> tuple[Image.Image, torch.Tensor]:
     return pil_image, to_tensor(pil_image)
 
 
+def _verify_sugarcane(image: torch.Tensor) -> dict[str, Any]:
+    if feature_verifier is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Sugarcane feature verifier is unavailable. ResNet18 training builds it automatically. "
+            "For older checkpoints use 'python3 main.py build-verifier' with the dataset and checkpoint paths. "
+            "Check /health for details.",
+        )
+    try:
+        return feature_verifier.verify(image)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Sugarcane verification failed; no classification was performed.") from exc
+
+
+def _unrecognized_response(filename: str | None, verification: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(status_code=422, content={
+        "filename": filename, "verification": verification, "models": {},
+    })
+
+
 def _model_checkpoint_path(model_type: str) -> Path:
     if model_type == "yolov8":
         env_name = "MODEL_CHECKPOINT_YOLO"
@@ -123,6 +146,24 @@ def _model_checkpoint_path(model_type: str) -> Path:
         env_name = "MODEL_CHECKPOINT_RESNET"
         default_path = DEFAULT_RESNET_CHECKPOINT_PATH
     return Path(os.getenv(env_name, default_path)).expanduser().resolve()
+
+
+def _feature_verifier_checkpoint_path() -> Path:
+    override = os.getenv("SUGARCANE_VERIFIER_CHECKPOINT")
+    if override:
+        return Path(override).expanduser().resolve()
+    source = model_checkpoints.get("resnet18", _model_checkpoint_path("resnet18"))
+    return source.parent / "verifier" / "feature_verifier.pt"
+
+
+def _load_feature_verifier() -> None:
+    global feature_verifier, verifier_load_error
+    feature_verifier = None
+    verifier_load_error = None
+    try:
+        feature_verifier = SugarcaneFeatureVerifier(_feature_verifier_checkpoint_path(), device=device)
+    except Exception as exc:
+        verifier_load_error = f"{type(exc).__name__}: {exc}"
 
 
 def _checkpoint_path() -> Path:
@@ -1853,6 +1894,7 @@ def _run_training_job(request: TrainingRequest) -> None:
             dataset_analysis_path=dataset_summary.get("summary_json_path"),
             checkpoint_path=train_summary.checkpoint_path,
             model_type=train_summary.model_type,
+            feature_verifier_path=train_summary.feature_verifier_path,
             android_artifact_path=train_summary.android_artifact_path,
             onnx_artifact_path=train_summary.onnx_artifact_path,
             android_metadata_path=train_summary.android_metadata_path,
@@ -1937,6 +1979,7 @@ def _load_model(
     model_image_sizes[requested_model_type] = image_size
     model_load_errors[requested_model_type] = None
     model_checkpoints[requested_model_type] = checkpoint_path
+    _load_feature_verifier()
 
 
 def _infer_model_type(checkpoint_path: Path) -> str:
@@ -1960,6 +2003,7 @@ def startup() -> None:
             loaded_models[model_type] = None
             model_classes[model_type] = []
             model_load_errors[model_type] = f"{type(exc).__name__}: {exc}"
+    _load_feature_verifier()
     preferred_model_type = _best_model_type_from_training_report()
     if preferred_model_type and loaded_models.get(preferred_model_type) is not None:
         loaded_model_type = preferred_model_type
@@ -1974,6 +2018,14 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "model_loaded": any(loaded_models.values()),
+        "prediction_ready": any(model is not None for model in loaded_models.values()) and feature_verifier is not None,
+        "verification": {
+            "loaded": feature_verifier is not None,
+            "error": verifier_load_error,
+            "checkpoint": feature_verifier.checkpoint_path if feature_verifier is not None else
+            str(_feature_verifier_checkpoint_path()),
+            "policy": feature_verifier.policy if feature_verifier is not None else None,
+        },
         "model_load_error": model_load_errors.get(loaded_model_type),
         "device": str(device),
         "checkpoint": str(_active_checkpoint_path()),
@@ -2159,9 +2211,14 @@ def get_training_status() -> dict[str, Any]:
 
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...), top_k: int = 3) -> dict[str, Any]:
+async def predict(file: UploadFile = File(...), top_k: int = Query(default=3, ge=1)) -> Any:
     contents = await file.read()
     _, image = _open_uploaded_image(contents)
+    if not any(model is not None for model in loaded_models.values()):
+        raise HTTPException(status_code=503, detail="No models are loaded yet.")
+    verification = _verify_sugarcane(image)
+    if verification["status"] != "accepted":
+        return _unrecognized_response(file.filename, verification)
     results: dict[str, Any] = {}
     for model_type in sorted(SUPPORTED_MODELS):
         if loaded_models.get(model_type) is None:
@@ -2182,17 +2239,21 @@ async def predict(file: UploadFile = File(...), top_k: int = 3) -> dict[str, Any
 
     return {
         "filename": file.filename,
+        "verification": verification,
         "models": results,
     }
 
 
 @app.post("/predict/annotated")
-async def predict_annotated(file: UploadFile = File(...), top_k: int = 3) -> StreamingResponse:
+async def predict_annotated(file: UploadFile = File(...), top_k: int = Query(default=3, ge=1)) -> Any:
     contents = await file.read()
     pil_image, image = _open_uploaded_image(contents)
     reason_model_type = "resnet18" if loaded_models.get("resnet18") is not None else "yolov8"
     if loaded_models.get(reason_model_type) is None:
         raise HTTPException(status_code=503, detail="No models are loaded yet.")
+    verification = _verify_sugarcane(image)
+    if verification["status"] != "accepted":
+        return _unrecognized_response(file.filename, verification)
     probabilities = _predict_probabilities(image, model_type=reason_model_type)
     predictions = _build_predictions(
         probabilities,
@@ -2210,6 +2271,9 @@ async def predict_annotated(file: UploadFile = File(...), top_k: int = 3) -> Str
     output.seek(0)
 
     headers = {
+        "X-Verification-Status": verification["status"],
+        "X-Feature-Distance": str(verification["feature_distance"]),
+        "X-Feature-Distance-Threshold": str(verification["distance_threshold"]),
         "X-Model-Type": reason_model_type,
         "X-Predicted-Class": str(predictions[0]["class_name"]),
         "X-Predicted-Variety": str(predictions[0]["variety"]),
