@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
+
+from sugarcane_variety.verification import build_feature_verifier
 
 from sugarcane_variety.preprocess import (
     analyze_prepared_dataset,
@@ -24,6 +28,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sugarcane variety classifier pipeline (preprocess + training)."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    verifier = subparsers.add_parser("build-verifier", help="Build a sugarcane-only feature rejection gate from a trained ResNet18.")
+    verifier.add_argument("--prepared-dir", required=True, help="Existing sugarcane train/val/test dataset.")
+    verifier.add_argument("--checkpoint-path", required=True, help="Trained ResNet18 checkpoint for this dataset.")
+    verifier.add_argument("--output-dir", help="Defaults to verifier/ beside the supplied checkpoint.")
+    verifier.add_argument("--acceptance-quantile", type=float, default=0.95,
+                          help="Fraction of validation sugarcane distances used for the acceptance threshold (0 to 1).")
+    verifier.add_argument("--references-per-class", type=int, default=256)
+    verifier.add_argument("--batch-size", type=int, default=32)
+    verifier.add_argument("--workers", type=int, default=2)
+    verifier.add_argument("--seed", type=int, default=42)
 
     prep = subparsers.add_parser("preprocess", help="Validate and split dataset.")
     prep.add_argument("--raw-dir", required=True, help="Path to raw dataset root.")
@@ -349,6 +364,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
 
+    if args.command == "build-verifier":
+        print(json.dumps(build_feature_verifier(
+            prepared_dir=args.prepared_dir, checkpoint_path=args.checkpoint_path,
+            output_dir=args.output_dir or str(Path(args.checkpoint_path).expanduser().parent / "verifier"),
+            acceptance_quantile=args.acceptance_quantile,
+            references_per_class=args.references_per_class, batch_size=args.batch_size,
+            workers=args.workers, seed=args.seed,
+        ), indent=2))
+        return
+
     if args.command == "preprocess":
         summary = run_preprocess(
             raw_dir=args.raw_dir,
@@ -468,6 +493,8 @@ def main() -> None:
         print(f"Best val acc: {summary.best_val_acc:.4f}")
         print(f"Test acc: {summary.test_acc:.4f}")
         print(f"Checkpoint: {summary.checkpoint_path}")
+        if summary.feature_verifier_path:
+            print(f"Feature verifier: {summary.feature_verifier_path}")
         if summary.android_artifact_path:
             print(f"Android artifact: {summary.android_artifact_path}")
         if summary.onnx_artifact_path:
@@ -556,6 +583,8 @@ def main() -> None:
         print(f"Best val acc: {train_summary.best_val_acc:.4f}")
         print(f"Test acc: {train_summary.test_acc:.4f}")
         print(f"Checkpoint: {train_summary.checkpoint_path}")
+        if train_summary.feature_verifier_path:
+            print(f"Feature verifier: {train_summary.feature_verifier_path}")
         if train_summary.android_artifact_path:
             print(f"Android artifact: {train_summary.android_artifact_path}")
         if train_summary.onnx_artifact_path:

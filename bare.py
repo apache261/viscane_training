@@ -228,6 +228,10 @@ def run_full_training(report: dict[str, Any]) -> dict[str, Any]:
         "test_acc": best_result["evaluation"].test_acc,
         "output_dir": best_result["output_dir"],
     }
+    resnet_result = next(item for item in results if item["model_type"] == "resnet18")
+    report["feature_verifier"] = {
+        "checkpoint_path": resnet_result["train"].feature_verifier_path,
+    }
     _write_report(report)
     return best_result
 

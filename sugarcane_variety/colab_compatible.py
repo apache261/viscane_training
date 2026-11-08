@@ -22,6 +22,7 @@ from sugarcane_variety.train import (
     run_evaluation,
     run_training,
 )
+from sugarcane_variety.verification import build_feature_verifier
 
 
 def install_requirements(requirements_path: str = "requirements.txt") -> None:
@@ -91,7 +92,7 @@ def train_for_colab(
     yolo_weights: str = "yolov8n-cls.pt",
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> TrainSummary:
-    """Run training with Colab-friendly defaults."""
+    """Train using the supplied paths; ResNet18 also builds its verifier automatically."""
     return run_training(
         prepared_dir=prepared_dir,
         output_dir=output_dir,

@@ -82,6 +82,7 @@ class TrainSummary:
     android_artifact_path: str | None = None
     onnx_artifact_path: str | None = None
     android_metadata_path: str | None = None
+    feature_verifier_path: str | None = None
 
 
 @dataclass
@@ -1160,7 +1161,7 @@ def run_training(
     progress_callback: ProgressCallback | None = None,
 ) -> TrainSummary:
     if model_type == "resnet18":
-        return _run_resnet18_training(
+        summary = _run_resnet18_training(
             prepared_dir=prepared_dir,
             output_dir=output_dir,
             epochs=epochs,
@@ -1183,6 +1184,24 @@ def run_training(
             use_balanced_sampler=use_balanced_sampler,
             progress_callback=progress_callback,
         )
+        # All existing callers (CLI, Colab, API, bare.py) use their own dataset
+        # and output paths. Keep verification inside this shared workflow.
+        from sugarcane_variety.verification import build_feature_verifier
+
+        verifier = build_feature_verifier(
+            prepared_dir=prepared_dir,
+            checkpoint_path=summary.checkpoint_path,
+            output_dir=str(Path(output_dir).expanduser() / "verifier"),
+            batch_size=batch_size,
+            workers=workers,
+            seed=seed,
+            overwrite=True,
+        )
+        summary.feature_verifier_path = verifier["checkpoint_path"]
+        if progress_callback is not None:
+            progress_callback({"event": "verifier_completed", "model_type": model_type,
+                               "feature_verifier": verifier})
+        return summary
     if model_type == "yolov8":
         return _run_yolov8_training(
             prepared_dir=prepared_dir,

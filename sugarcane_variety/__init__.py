@@ -10,8 +10,10 @@ from sugarcane_variety.colab_compatible import (
 )
 from sugarcane_variety.preprocess import run_preprocess
 from sugarcane_variety.train import run_evaluation, run_training
+from sugarcane_variety.verification import build_feature_verifier
 
 __all__ = [
+    "build_feature_verifier",
     "mount_drive",
     "preprocess_for_colab",
     "print_eval_summary",
